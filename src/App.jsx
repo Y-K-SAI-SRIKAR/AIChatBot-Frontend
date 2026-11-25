@@ -13,6 +13,17 @@ import {
 
 import './App.css'
 
+// =========================================================
+// API CONFIGURATION
+// =========================================================
+
+// Bedrock chatbot API: chat generation and product search only.
+const CHAT_API_BASE_URL = (
+  import.meta.env.VITE_CHAT_API_URL ||
+  'https://chatbotcontinuous.onrender.com'
+).replace(/\/+$/, '')
+
+// Existing MLOps API: dashboard, metrics, feedback and monitoring.
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ||
   'https://aichatbot-continuospipeline.onrender.com'
@@ -45,6 +56,10 @@ const PIPELINE = [
   ['Deploy & monitor', 'Production loop', Activity],
 ]
 
+// =========================================================
+// HELPERS
+// =========================================================
+
 function makeId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID()
@@ -61,9 +76,9 @@ function formatConfidence(value) {
 
 function formatLatency(value) {
   return typeof value === 'number'
-    ? (value >= 1000
+    ? value >= 1000
       ? `${(value / 1000).toFixed(2)}s`
-      : `${value}ms`)
+      : `${value}ms`
     : String(value)
 }
 
@@ -72,11 +87,30 @@ function formatValue(value) {
     return 'Not available from backend'
   }
 
-  if (typeof value === 'object') return JSON.stringify(value)
+  if (typeof value === 'object') {
+    return JSON.stringify(value)
+  }
 
   return String(value)
 }
 
+function errorText(error) {
+  if (error?.status === 401) {
+    return 'The backend requires authentication.'
+  }
+
+  if (error?.status >= 500) {
+    return 'The backend is temporarily unavailable. Try again.'
+  }
+
+  if (error instanceof TypeError) {
+    return 'Could not reach the backend. Check the API URL and CORS configuration.'
+  }
+
+  return error?.message || 'The backend request failed.'
+}
+
+// Existing MLOps API requests.
 async function fetchJson(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, options)
 
@@ -85,7 +119,7 @@ async function fetchJson(path, options = {}) {
   try {
     payload = await response.json()
   } catch {
-    // Some health implementations may return an empty body.
+    // Some endpoints may return an empty response.
   }
 
   if (!response.ok) {
@@ -100,25 +134,28 @@ async function fetchJson(path, options = {}) {
   return payload
 }
 
-async function fetchMetrics() {
-  // Do not expose private backend authentication tokens in Vite variables.
-  // If metrics authentication is enabled, use a secure backend proxy.
+// New Bedrock API requests.
+async function fetchChatJson(path, options = {}) {
+  const response = await fetch(`${CHAT_API_BASE_URL}${path}`, options)
 
-  const response = await fetch(`${API_BASE_URL}/metrics`)
-  const text = await response.text()
+  let payload = null
+
+  try {
+    payload = await response.json()
+  } catch {
+    // Handle invalid or empty JSON.
+  }
 
   if (!response.ok) {
     const error = new Error(
-      response.status === 401
-        ? 'Metrics authentication is required. Configure a secure backend proxy.'
-        : `Metrics request failed (${response.status})`
+      payload?.detail || `Chat request failed (${response.status})`
     )
 
     error.status = response.status
     throw error
   }
 
-  return { text, parsed: parsePrometheus(text) }
+  return payload
 }
 
 function parsePrometheus(text) {
@@ -131,38 +168,52 @@ function parsePrometheus(text) {
       /^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{[^}]*\})?\s+([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)$/
     )
 
-    if (match) values[match[1]] = Number(match[2])
+    if (match) {
+      values[match[1]] = Number(match[2])
+    }
   })
 
   return values
 }
 
-function errorText(error) {
-  if (error?.status === 401) {
-    return 'Metrics are unavailable because the backend requires authentication.'
+async function fetchMetrics() {
+  const response = await fetch(`${API_BASE_URL}/metrics`)
+  const text = await response.text()
+
+  if (!response.ok) {
+    const error = new Error(
+      response.status === 401
+        ? 'Metrics authentication is required.'
+        : `Metrics request failed (${response.status})`
+    )
+
+    error.status = response.status
+    throw error
   }
 
-  if (error?.status >= 500) {
-    return 'The backend is temporarily unavailable. Try refreshing again.'
+  return {
+    text,
+    parsed: parsePrometheus(text),
   }
-
-  if (error instanceof TypeError) {
-    return 'Could not reach the backend. Check the API origin and CORS configuration.'
-  }
-
-  return error?.message || 'The backend request failed.'
 }
+
+// =========================================================
+// MAIN APP
+// =========================================================
 
 function App() {
   const [activeView, setActiveView] = useState('overview')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
+
   const [conversationId, setConversationId] = useState(makeId)
   const [conversations, setConversations] = useState([])
+
   const [activeConversation, setActiveConversation] = useState({
     id: null,
     messages: [],
   })
+
   const [composer, setComposer] = useState('')
   const [sending, setSending] = useState(false)
   const [expanded, setExpanded] = useState(null)
@@ -183,9 +234,9 @@ function App() {
 
   const bottomRef = useRef(null)
 
-  // -------------------------------------------------------
-  // Backend monitoring
-  // -------------------------------------------------------
+  // =======================================================
+  // BACKEND MONITORING
+  // =======================================================
 
   const loadMonitoring = useCallback(async (refresh = false) => {
     setMonitoring((current) => ({
@@ -201,6 +252,7 @@ function App() {
       fetchJson('/feedback/stats'),
       fetchJson('/metadata/model'),
       fetchJson('/metadata/prompt'),
+      fetchMetrics(),
     ])
 
     const fields = [
@@ -209,6 +261,7 @@ function App() {
       'stats',
       'model',
       'prompt',
+      'metrics',
     ]
 
     const next = {
@@ -248,12 +301,14 @@ function App() {
   }, [loadMonitoring])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    bottomRef.current?.scrollIntoView({
+      behavior: 'smooth',
+    })
   }, [activeConversation.messages, sending])
 
-  // -------------------------------------------------------
-  // Conversation history synchronization
-  // -------------------------------------------------------
+  // =======================================================
+  // CONVERSATION HISTORY SYNCHRONIZATION
+  // =======================================================
 
   useEffect(() => {
     if (!conversationId || !activeConversation.messages.length) {
@@ -272,9 +327,9 @@ function App() {
     )
   }, [activeConversation.messages, conversationId])
 
-  // -------------------------------------------------------
-  // New conversation
-  // -------------------------------------------------------
+  // =======================================================
+  // NEW CONVERSATION
+  // =======================================================
 
   const startNewChat = useCallback(() => {
     if (activeConversation.messages.length) {
@@ -293,6 +348,7 @@ function App() {
     const id = makeId()
 
     setConversationId(id)
+
     setActiveConversation({
       id,
       messages: [],
@@ -305,9 +361,9 @@ function App() {
     setActiveView('chat')
   }, [activeConversation.messages, conversationId])
 
-  // -------------------------------------------------------
-  // Send chat message
-  // -------------------------------------------------------
+  // =======================================================
+  // SEND CHAT MESSAGE
+  // =======================================================
 
   const sendMessage = useCallback(async (value, retryId = null) => {
     const text = value.trim()
@@ -317,6 +373,33 @@ function App() {
     const requestId = makeId()
     const assistantId = retryId || makeId()
     const currentMessages = activeConversation.messages
+
+    let previousMessages = currentMessages
+
+    // Exclude the failed response and its user message on retry.
+    if (retryId) {
+      const failedIndex = currentMessages.findIndex(
+        (item) => item.id === retryId
+      )
+
+      previousMessages = failedIndex >= 0
+        ? currentMessages.slice(0, Math.max(0, failedIndex - 1))
+        : currentMessages
+    }
+
+    // Bedrock expects role/content objects.
+    const history = previousMessages
+      .filter((item) =>
+        ['user', 'assistant'].includes(item.role) &&
+        item.text &&
+        item.status !== 'error' &&
+        item.status !== 'loading'
+      )
+      .map((item) => ({
+        role: item.role,
+        content: item.text,
+      }))
+      .slice(-10)
 
     if (retryId) {
       setActiveConversation((current) => ({
@@ -373,24 +456,23 @@ function App() {
     setSending(true)
 
     try {
-      const payload = await fetchJson('/chat', {
+      // Chat goes ONLY to the Bedrock API.
+      const payload = await fetchChatJson('/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           message: text,
-          conversation_id: conversationId,
-          request_id: requestId,
+          history,
         }),
       })
 
-      if (
-        !payload?.response ||
-        typeof payload.response !== 'string'
-      ) {
+      const answer = payload?.response || payload?.answer
+
+      if (!answer || typeof answer !== 'string') {
         throw new Error(
-          'The backend returned no assistant response.'
+          'The Bedrock API returned no assistant response.'
         )
       }
 
@@ -401,8 +483,8 @@ function App() {
             ? {
                 ...item,
                 status: 'complete',
-                text: payload.response,
-                requestId: payload.request_id || requestId,
+                text: answer,
+                requestId: payload.request_id || null,
                 metadata: payload,
                 feedback: {
                   rating: null,
@@ -433,9 +515,9 @@ function App() {
     }
   }, [activeConversation.messages, conversationId, sending])
 
-  // -------------------------------------------------------
-  // Retry failed message
-  // -------------------------------------------------------
+  // =======================================================
+  // RETRY FAILED MESSAGE
+  // =======================================================
 
   const retryMessage = (message) => {
     const index = activeConversation.messages.findIndex(
@@ -449,9 +531,9 @@ function App() {
     }
   }
 
-  // -------------------------------------------------------
-  // Update message
-  // -------------------------------------------------------
+  // =======================================================
+  // UPDATE MESSAGE
+  // =======================================================
 
   const updateMessage = (id, changes) => {
     setActiveConversation((current) => ({
@@ -464,9 +546,9 @@ function App() {
     }))
   }
 
-  // -------------------------------------------------------
-  // Feedback submission
-  // -------------------------------------------------------
+  // =======================================================
+  // FEEDBACK SUBMISSION
+  // =======================================================
 
   const submitFeedback = async (message) => {
     if (
@@ -487,6 +569,7 @@ function App() {
     })
 
     try {
+      // Feedback continues to use the existing MLOps API.
       await fetchJson('/feedback', {
         method: 'POST',
         headers: {
@@ -509,7 +592,6 @@ function App() {
         },
       })
 
-      // Refresh feedback statistics after successful submission.
       loadMonitoring(true)
     } catch (error) {
       updateMessage(message.id, {
@@ -525,9 +607,9 @@ function App() {
     }
   }
 
-  // -------------------------------------------------------
-  // Switch conversation
-  // -------------------------------------------------------
+  // =======================================================
+  // SWITCH CONVERSATION
+  // =======================================================
 
   const switchConversation = (conversation) => {
     setConversationId(conversation.id)
@@ -641,7 +723,9 @@ function App() {
                 <span className="live-dot" />
                 Backend-connected UI
               </div>
+
               <p>Live status is read from the API.</p>
+
               <span className="demo-pill">
                 No simulated metrics
               </span>
@@ -706,12 +790,13 @@ function App() {
                     : 'live-dot offline-dot'
                 }
               />
+
               <span>
                 {backendConnected
-                  ? 'Backend connected'
+                  ? 'MLOps backend connected'
                   : monitoring.loading
                     ? 'Checking backend'
-                    : 'Backend unavailable'}
+                    : 'MLOps backend unavailable'}
               </span>
             </div>
 
@@ -789,7 +874,7 @@ function ChatView({
             </div>
 
             <p className="kicker">
-              Live inference workspace
+              Live Bedrock inference workspace
             </p>
 
             <h2>
@@ -799,9 +884,8 @@ function ChatView({
             </h2>
 
             <p className="welcome-copy">
-              Send a real request to the deployed chatbot, then inspect
-              correlation IDs, intent metadata, latency, and feedback
-              collection.
+              Ask questions, discover products and compare
+              shopping options with live search sources.
             </p>
 
             <div className="suggestion-grid">
@@ -814,7 +898,9 @@ function ChatView({
                   <span className="suggestion-icon">
                     <PackageSearch size={17} />
                   </span>
+
                   <span>{item}</span>
+
                   <ChevronRight size={15} />
                 </button>
               ))}
@@ -857,7 +943,7 @@ function ChatView({
               maxLength={1000}
               onChange={(event) => setComposer(event.target.value)}
               onKeyDown={keyDown}
-              placeholder="Ask the deployed assistant..."
+              placeholder="Ask the shopping assistant..."
               rows={1}
               aria-label="Message the assistant"
               disabled={sending}
@@ -866,7 +952,7 @@ function ChatView({
             <div className="composer-footer">
               <span>
                 <Sparkles size={12} />
-                Live backend inference · {composer.length}/1000
+                Bedrock AI · {composer.length}/1000
               </span>
 
               <button
@@ -914,6 +1000,7 @@ function MessageBubble({
         <div className="message user-message">
           {message.text}
         </div>
+
         <div className="message-avatar user-avatar">ML</div>
       </div>
     )
@@ -930,8 +1017,9 @@ function MessageBubble({
           <span className="typing-dot" />
           <span className="typing-dot" />
           <span className="typing-dot" />
+
           <span className="loading-label">
-            Waiting for backend...
+            Searching and generating response...
           </span>
         </div>
       </div>
@@ -966,6 +1054,11 @@ function MessageBubble({
     status: 'idle',
     error: '',
   }
+
+  // Sources returned by Tavily through the Bedrock API.
+  const sources = Array.isArray(message.metadata?.sources)
+    ? message.metadata.sources
+    : []
 
   return (
     <div className="message-row assistant-row">
@@ -1005,6 +1098,41 @@ function MessageBubble({
               {message.text || ''}
             </ReactMarkdown>
           </div>
+
+          {/* Additional clickable search sources */}
+          {sources.length > 0 && (
+            <div className="chat-sources">
+              <strong>Search sources</strong>
+
+              <div className="chat-source-list">
+                {sources.map((source, index) => {
+                  const safeUrl =
+                    typeof source.url === 'string' &&
+                    /^https?:\/\//i.test(source.url)
+                      ? source.url
+                      : null
+
+                  if (!safeUrl) return null
+
+                  return (
+                    <a
+                      key={`${safeUrl}-${index}`}
+                      href={safeUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="chat-source-link"
+                    >
+                      <span>
+                        {source.title || 'View source'}
+                      </span>
+
+                      <ChevronRight size={14} />
+                    </a>
+                  )
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="assistant-tools">
@@ -1016,6 +1144,7 @@ function MessageBubble({
           >
             <Zap size={13} />
             Response metadata
+
             <ChevronDown
               size={13}
               className={expanded ? 'rotate' : ''}
@@ -1033,6 +1162,7 @@ function MessageBubble({
               }
               onClick={() => {
                 setFeedbackMessage(message.id)
+
                 updateMessage(message.id, {
                   feedback: {
                     ...feedback,
@@ -1054,6 +1184,7 @@ function MessageBubble({
               }
               onClick={() => {
                 setFeedbackMessage(message.id)
+
                 updateMessage(message.id, {
                   feedback: {
                     ...feedback,
@@ -1142,7 +1273,8 @@ function MessageBubble({
                   onClick={() => submitFeedback(message)}
                   disabled={
                     !feedback.rating ||
-                    feedback.status === 'submitting'
+                    feedback.status === 'submitting' ||
+                    !message.requestId
                   }
                 >
                   {feedback.status === 'submitting' ? (
@@ -1150,8 +1282,15 @@ function MessageBubble({
                   ) : (
                     <Send size={13} />
                   )}
+
                   Submit feedback
                 </button>
+
+                {!message.requestId && (
+                  <span className="feedback-error">
+                    Feedback requires a request ID from the MLOps backend.
+                  </span>
+                )}
 
                 {feedback.error && (
                   <span className="feedback-error">
@@ -1178,6 +1317,8 @@ function MessageBubble({
 
 function ResponseMetadata({ metadata = {} }) {
   const items = [
+    ['Model', metadata.model],
+    ['Sources returned', metadata.sources?.length],
     ['Request ID', metadata.request_id, true],
     ['Intent', metadata.predicted_intent],
     [
@@ -1187,8 +1328,8 @@ function ResponseMetadata({ metadata = {} }) {
         ? formatConfidence(metadata.intent_confidence)
         : null,
     ],
-    ['Model', metadata.model_version],
-    ['Prompt', metadata.prompt_version],
+    ['Model version', metadata.model_version],
+    ['Prompt version', metadata.prompt_version],
     [
       'Latency',
       metadata.latency_ms !== null &&
@@ -1209,6 +1350,7 @@ function ResponseMetadata({ metadata = {} }) {
         items.map(([label, value, copyable]) => (
           <div key={label}>
             <span>{label}</span>
+
             <strong>
               {String(value).slice(0, 32)}
               {String(value).length > 32 ? '…' : ''}
@@ -1304,7 +1446,7 @@ function Dashboard({ view, monitoring, refresh }) {
 function viewDescription(view) {
   return {
     overview:
-      'Live aggregates and metadata returned by the deployed backend.',
+      'Live aggregates and metadata returned by the deployed MLOps backend.',
     model:
       'Only model, prompt, and inference data exposed by the backend is shown.',
     feedback:
@@ -1312,7 +1454,7 @@ function viewDescription(view) {
     pipeline:
       'Architecture stages are shown read-only unless the backend exposes execution status.',
     health:
-      'Connectivity and readiness are based on backend responses, not frontend availability.',
+      'Connectivity and readiness are based on MLOps backend responses.',
   }[view]
 }
 
