@@ -201,7 +201,6 @@ function App() {
       fetchJson('/feedback/stats'),
       fetchJson('/metadata/model'),
       fetchJson('/metadata/prompt'),
-      fetchMetrics(),
     ])
 
     const fields = [
@@ -210,7 +209,6 @@ function App() {
       'stats',
       'model',
       'prompt',
-      'metrics',
     ]
 
     const next = {
