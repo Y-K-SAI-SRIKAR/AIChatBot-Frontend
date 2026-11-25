@@ -18,8 +18,6 @@ const API_BASE_URL = (
   'https://aichatbot-continuospipeline.onrender.com'
 ).replace(/\/+$/, '')
 
-const METRICS_AUTH_TOKEN = import.meta.env.VITE_METRICS_AUTH_TOKEN || ''
-
 const NAV_ITEMS = [
   ['overview', 'Overview', LayoutDashboard],
   ['chat', 'Live Chat', MessageCircle],
@@ -103,17 +101,16 @@ async function fetchJson(path, options = {}) {
 }
 
 async function fetchMetrics() {
-  const headers = METRICS_AUTH_TOKEN
-    ? { Authorization: `Bearer ${METRICS_AUTH_TOKEN}` }
-    : {}
+  // Do not expose private backend authentication tokens in Vite variables.
+  // If metrics authentication is enabled, use a secure backend proxy.
 
-  const response = await fetch(`${API_BASE_URL}/metrics`, { headers })
+  const response = await fetch(`${API_BASE_URL}/metrics`)
   const text = await response.text()
 
   if (!response.ok) {
     const error = new Error(
       response.status === 401
-        ? 'Metrics authentication is required.'
+        ? 'Metrics authentication is required. Configure a secure backend proxy.'
         : `Metrics request failed (${response.status})`
     )
 
@@ -142,7 +139,7 @@ function parsePrometheus(text) {
 
 function errorText(error) {
   if (error?.status === 401) {
-    return 'Metrics are unavailable because the backend requires a valid metrics token.'
+    return 'Metrics are unavailable because the backend requires authentication.'
   }
 
   if (error?.status >= 500) {
@@ -186,6 +183,10 @@ function App() {
 
   const bottomRef = useRef(null)
 
+  // -------------------------------------------------------
+  // Backend monitoring
+  // -------------------------------------------------------
+
   const loadMonitoring = useCallback(async (refresh = false) => {
     setMonitoring((current) => ({
       ...current,
@@ -203,12 +204,6 @@ function App() {
       fetchMetrics(),
     ])
 
-    const next = {
-      updatedAt: new Date().toISOString(),
-      refreshing: false,
-      loading: false,
-    }
-
     const fields = [
       'health',
       'ready',
@@ -218,13 +213,22 @@ function App() {
       'metrics',
     ]
 
+    const next = {
+      updatedAt: new Date().toISOString(),
+      refreshing: false,
+      loading: false,
+    }
+
     const errors = []
 
     results.forEach((result, index) => {
+      const field = fields[index]
+
       if (result.status === 'fulfilled') {
-        next[fields[index]] = result.value
+        next[field] = result.value
       } else {
-        errors.push(`${fields[index]}: ${errorText(result.reason)}`)
+        next[field] = null
+        errors.push(`${field}: ${errorText(result.reason)}`)
       }
     })
 
@@ -238,7 +242,9 @@ function App() {
   useEffect(() => {
     loadMonitoring()
 
-    const timer = setInterval(() => loadMonitoring(true), 30000)
+    const timer = setInterval(() => {
+      loadMonitoring(true)
+    }, 30000)
 
     return () => clearInterval(timer)
   }, [loadMonitoring])
@@ -247,12 +253,40 @@ function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [activeConversation.messages, sending])
 
+  // -------------------------------------------------------
+  // Conversation history synchronization
+  // -------------------------------------------------------
+
+  useEffect(() => {
+    if (!conversationId || !activeConversation.messages.length) {
+      return
+    }
+
+    setConversations((current) =>
+      current.map((item) =>
+        item.id === conversationId
+          ? {
+              ...item,
+              messages: activeConversation.messages,
+            }
+          : item
+      )
+    )
+  }, [activeConversation.messages, conversationId])
+
+  // -------------------------------------------------------
+  // New conversation
+  // -------------------------------------------------------
+
   const startNewChat = useCallback(() => {
     if (activeConversation.messages.length) {
       setConversations((current) =>
         current.map((item) =>
           item.id === conversationId
-            ? { ...item, messages: activeConversation.messages }
+            ? {
+                ...item,
+                messages: activeConversation.messages,
+              }
             : item
         )
       )
@@ -261,13 +295,21 @@ function App() {
     const id = makeId()
 
     setConversationId(id)
-    setActiveConversation({ id, messages: [] })
+    setActiveConversation({
+      id,
+      messages: [],
+    })
+
     setComposer('')
     setExpanded(null)
     setFeedbackMessage(null)
     setSidebarOpen(false)
     setActiveView('chat')
   }, [activeConversation.messages, conversationId])
+
+  // -------------------------------------------------------
+  // Send chat message
+  // -------------------------------------------------------
 
   const sendMessage = useCallback(async (value, retryId = null) => {
     const text = value.trim()
@@ -283,16 +325,27 @@ function App() {
         ...current,
         messages: current.messages.map((item) =>
           item.id === retryId
-            ? { ...item, status: 'loading', requestId, error: '' }
+            ? {
+                ...item,
+                status: 'loading',
+                requestId,
+                error: '',
+              }
             : item
         ),
       }))
     } else {
+      const userMessage = {
+        id: makeId(),
+        role: 'user',
+        text,
+      }
+
       setActiveConversation((current) => ({
         ...current,
         messages: [
           ...current.messages,
-          { id: makeId(), role: 'user', text },
+          userMessage,
           {
             id: assistantId,
             role: 'assistant',
@@ -311,7 +364,7 @@ function App() {
           title: text,
           messages: [
             ...currentMessages,
-            { id: makeId(), role: 'user', text },
+            userMessage,
           ],
           time: 'Just now',
         },
@@ -324,7 +377,9 @@ function App() {
     try {
       const payload = await fetchJson('/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           message: text,
           conversation_id: conversationId,
@@ -332,8 +387,13 @@ function App() {
         }),
       })
 
-      if (!payload?.response || typeof payload.response !== 'string') {
-        throw new Error('The backend returned no assistant response.')
+      if (
+        !payload?.response ||
+        typeof payload.response !== 'string'
+      ) {
+        throw new Error(
+          'The backend returned no assistant response.'
+        )
       }
 
       setActiveConversation((current) => ({
@@ -375,6 +435,10 @@ function App() {
     }
   }, [activeConversation.messages, conversationId, sending])
 
+  // -------------------------------------------------------
+  // Retry failed message
+  // -------------------------------------------------------
+
   const retryMessage = (message) => {
     const index = activeConversation.messages.findIndex(
       (item) => item.id === message.id
@@ -387,14 +451,24 @@ function App() {
     }
   }
 
+  // -------------------------------------------------------
+  // Update message
+  // -------------------------------------------------------
+
   const updateMessage = (id, changes) => {
     setActiveConversation((current) => ({
       ...current,
       messages: current.messages.map((item) =>
-        item.id === id ? { ...item, ...changes } : item
+        item.id === id
+          ? { ...item, ...changes }
+          : item
       ),
     }))
   }
+
+  // -------------------------------------------------------
+  // Feedback submission
+  // -------------------------------------------------------
 
   const submitFeedback = async (message) => {
     if (
@@ -417,7 +491,9 @@ function App() {
     try {
       await fetchJson('/feedback', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           request_id: message.requestId,
           rating: message.feedback.rating,
@@ -434,6 +510,9 @@ function App() {
           error: '',
         },
       })
+
+      // Refresh feedback statistics after successful submission.
+      loadMonitoring(true)
     } catch (error) {
       updateMessage(message.id, {
         feedback: {
@@ -448,18 +527,30 @@ function App() {
     }
   }
 
+  // -------------------------------------------------------
+  // Switch conversation
+  // -------------------------------------------------------
+
   const switchConversation = (conversation) => {
     setConversationId(conversation.id)
+
     setActiveConversation({
       id: conversation.id,
       messages: conversation.messages || [],
     })
+
     setActiveView('chat')
     setSidebarOpen(false)
   }
 
   const activeTitle =
-    NAV_ITEMS.find(([key]) => key === activeView)?.[1] || 'Overview'
+    NAV_ITEMS.find(([key]) => key === activeView)?.[1] ||
+    'Overview'
+
+  const backendConnected = Boolean(
+    monitoring.health &&
+    monitoring.health.status === 'AI ChatBot API Running'
+  )
 
   return (
     <div className="app-shell">
@@ -491,7 +582,10 @@ function App() {
           </button>
         </div>
 
-        <button className="new-chat-button" onClick={startNewChat}>
+        <button
+          className="new-chat-button"
+          onClick={startNewChat}
+        >
           <MessageSquarePlus size={18} />
           {!collapsed && 'New chat'}
         </button>
@@ -501,7 +595,9 @@ function App() {
             <button
               key={key}
               className={
-                activeView === key ? 'nav-item active' : 'nav-item'
+                activeView === key
+                  ? 'nav-item active'
+                  : 'nav-item'
               }
               onClick={() => {
                 setActiveView(key)
@@ -548,7 +644,9 @@ function App() {
                 Backend-connected UI
               </div>
               <p>Live status is read from the API.</p>
-              <span className="demo-pill">No simulated metrics</span>
+              <span className="demo-pill">
+                No simulated metrics
+              </span>
             </div>
           )}
 
@@ -562,14 +660,19 @@ function App() {
               </div>
             )}
 
-            <Settings2 size={16} className="profile-settings" />
+            <Settings2
+              size={16}
+              className="profile-settings"
+            />
           </div>
         </div>
 
         <button
           className="collapse-button"
           onClick={() => setCollapsed((value) => !value)}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={
+            collapsed ? 'Expand sidebar' : 'Collapse sidebar'
+          }
         >
           {collapsed ? (
             <PanelLeftOpen size={18} />
@@ -590,19 +693,30 @@ function App() {
           </button>
 
           <div>
-            <p className="eyebrow">AI Chatbot · Continuous Learning</p>
+            <p className="eyebrow">
+              AI Chatbot · Continuous Learning
+            </p>
             <h1>{activeTitle}</h1>
           </div>
 
           <div className="topbar-actions">
             <div className="assistant-status">
-              <span className="live-dot" />
+              <span
+                className={
+                  backendConnected
+                    ? 'live-dot'
+                    : 'live-dot offline-dot'
+                }
+              />
               <span>
-                {monitoring.health
+                {backendConnected
                   ? 'Backend connected'
-                  : 'Checking backend'}
+                  : monitoring.loading
+                    ? 'Checking backend'
+                    : 'Backend unavailable'}
               </span>
             </div>
+
             <div className="top-avatar">ML</div>
           </div>
         </header>
@@ -634,6 +748,10 @@ function App() {
     </div>
   )
 }
+
+// =========================================================
+// CHAT VIEW
+// =========================================================
 
 function ChatView({
   conversation,
@@ -672,7 +790,9 @@ function ChatView({
               <Sparkles size={25} />
             </div>
 
-            <p className="kicker">Live inference workspace</p>
+            <p className="kicker">
+              Live inference workspace
+            </p>
 
             <h2>
               Explore the assistant.
@@ -776,6 +896,10 @@ function ChatView({
   )
 }
 
+// =========================================================
+// MESSAGE BUBBLE
+// =========================================================
+
 function MessageBubble({
   message,
   expanded,
@@ -789,7 +913,9 @@ function MessageBubble({
   if (message.role === 'user') {
     return (
       <div className="message-row user-row">
-        <div className="message user-message">{message.text}</div>
+        <div className="message user-message">
+          {message.text}
+        </div>
         <div className="message-avatar user-avatar">ML</div>
       </div>
     )
@@ -806,7 +932,9 @@ function MessageBubble({
           <span className="typing-dot" />
           <span className="typing-dot" />
           <span className="typing-dot" />
-          <span className="loading-label">Waiting for backend...</span>
+          <span className="loading-label">
+            Waiting for backend...
+          </span>
         </div>
       </div>
     )
@@ -822,6 +950,7 @@ function MessageBubble({
         <div className="message assistant-message error-message">
           <strong>Request failed.</strong>
           <p>{message.error}</p>
+
           <button
             className="retry-button"
             onClick={() => retryMessage(message)}
@@ -854,14 +983,20 @@ function MessageBubble({
               components={{
                 a: ({ href, children, ...props }) => {
                   const safeHref =
-                    href && /^https?:\/\//i.test(href) ? href : undefined
+                    href && /^https?:\/\//i.test(href)
+                      ? href
+                      : undefined
+
+                  if (!safeHref) {
+                    return <span>{children}</span>
+                  }
 
                   return (
                     <a
+                      {...props}
                       href={safeHref}
                       target="_blank"
                       rel="noopener noreferrer"
-                      {...props}
                     >
                       {children}
                     </a>
@@ -898,7 +1033,16 @@ function MessageBubble({
                   ? 'feedback-button chosen'
                   : 'feedback-button'
               }
-              onClick={() => setFeedbackMessage(message.id)}
+              onClick={() => {
+                setFeedbackMessage(message.id)
+                updateMessage(message.id, {
+                  feedback: {
+                    ...feedback,
+                    rating: 'positive',
+                    error: '',
+                  },
+                })
+              }}
               aria-label="Choose positive feedback"
             >
               <ThumbsUp size={14} />
@@ -910,7 +1054,16 @@ function MessageBubble({
                   ? 'feedback-button chosen negative'
                   : 'feedback-button'
               }
-              onClick={() => setFeedbackMessage(message.id)}
+              onClick={() => {
+                setFeedbackMessage(message.id)
+                updateMessage(message.id, {
+                  feedback: {
+                    ...feedback,
+                    rating: 'negative',
+                    error: '',
+                  },
+                })
+              }}
               aria-label="Choose negative feedback"
             >
               <ThumbsDown size={14} />
@@ -931,6 +1084,7 @@ function MessageBubble({
 
               <div className="rating-picker">
                 <button
+                  type="button"
                   className={
                     feedback.rating === 'positive'
                       ? 'rating-choice selected'
@@ -938,7 +1092,11 @@ function MessageBubble({
                   }
                   onClick={() =>
                     updateMessage(message.id, {
-                      feedback: { ...feedback, rating: 'positive' },
+                      feedback: {
+                        ...feedback,
+                        rating: 'positive',
+                        error: '',
+                      },
                     })
                   }
                 >
@@ -946,6 +1104,7 @@ function MessageBubble({
                 </button>
 
                 <button
+                  type="button"
                   className={
                     feedback.rating === 'negative'
                       ? 'rating-choice selected negative'
@@ -953,7 +1112,11 @@ function MessageBubble({
                   }
                   onClick={() =>
                     updateMessage(message.id, {
-                      feedback: { ...feedback, rating: 'negative' },
+                      feedback: {
+                        ...feedback,
+                        rating: 'negative',
+                        error: '',
+                      },
                     })
                   }
                 >
@@ -977,6 +1140,7 @@ function MessageBubble({
 
               <div className="feedback-actions">
                 <button
+                  type="button"
                   onClick={() => submitFeedback(message)}
                   disabled={
                     !feedback.rating ||
@@ -1010,6 +1174,10 @@ function MessageBubble({
   )
 }
 
+// =========================================================
+// RESPONSE METADATA
+// =========================================================
+
 function ResponseMetadata({ metadata = {} }) {
   const items = [
     ['Request ID', metadata.request_id, true],
@@ -1032,7 +1200,9 @@ function ResponseMetadata({ metadata = {} }) {
     ],
   ].filter(
     (item) =>
-      item[1] !== undefined && item[1] !== null && item[1] !== ''
+      item[1] !== undefined &&
+      item[1] !== null &&
+      item[1] !== ''
   )
 
   return (
@@ -1068,6 +1238,10 @@ function ResponseMetadata({ metadata = {} }) {
   )
 }
 
+// =========================================================
+// DASHBOARD
+// =========================================================
+
 function Dashboard({ view, monitoring, refresh }) {
   const { loading, refreshing, error, updatedAt } = monitoring
 
@@ -1083,8 +1257,9 @@ function Dashboard({ view, monitoring, refresh }) {
             <span className="demo-badge">
               <span /> Live backend data
             </span>
+
             <span className="muted-label">
-              Last successful refresh: {updated}
+              Last refresh: {updated}
             </span>
           </div>
 
@@ -1107,6 +1282,7 @@ function Dashboard({ view, monitoring, refresh }) {
           ) : (
             <RefreshCw size={15} />
           )}
+
           {refreshing ? 'Refreshing' : 'Refresh data'}
         </button>
       </div>
@@ -1129,11 +1305,16 @@ function Dashboard({ view, monitoring, refresh }) {
 
 function viewDescription(view) {
   return {
-    overview: 'Live aggregates and metadata returned by the deployed backend.',
-    model: 'Only model, prompt, and inference data exposed by the backend is shown.',
-    feedback: 'Feedback counts are read from the deployed feedback statistics endpoint.',
-    pipeline: 'Architecture stages are shown read-only unless the backend exposes execution status.',
-    health: 'Connectivity and readiness are based on backend responses, not frontend availability.',
+    overview:
+      'Live aggregates and metadata returned by the deployed backend.',
+    model:
+      'Only model, prompt, and inference data exposed by the backend is shown.',
+    feedback:
+      'Feedback counts are read from the deployed feedback statistics endpoint.',
+    pipeline:
+      'Architecture stages are shown read-only unless the backend exposes execution status.',
+    health:
+      'Connectivity and readiness are based on backend responses, not frontend availability.',
   }[view]
 }
 
@@ -1147,15 +1328,28 @@ function LoadingPanel() {
 }
 
 function ViewContent({ view, monitoring }) {
-  if (view === 'health') return <HealthView monitoring={monitoring} />
-  if (view === 'pipeline') return <PipelineView />
-  if (view === 'model') return <ModelView monitoring={monitoring} />
+  if (view === 'health') {
+    return <HealthView monitoring={monitoring} />
+  }
+
+  if (view === 'pipeline') {
+    return <PipelineView />
+  }
+
+  if (view === 'model') {
+    return <ModelView monitoring={monitoring} />
+  }
+
   if (view === 'feedback') {
     return <FeedbackView stats={monitoring.stats} />
   }
 
   return <OverviewView monitoring={monitoring} />
 }
+
+// =========================================================
+// OVERVIEW
+// =========================================================
 
 function OverviewView({ monitoring }) {
   const stats = monitoring.stats || {}
@@ -1170,7 +1364,11 @@ function OverviewView({ monitoring }) {
     ['Positive ratings', stats.positive_ratings, ThumbsUp],
     ['Negative ratings', stats.negative_ratings, ThumbsDown],
     ['Training eligible', stats.training_eligible, FileCheck2],
-    ['Model version', model.model_version || ready.model_version, Cpu],
+    [
+      'Model version',
+      model.model_version || ready.model_version,
+      Cpu,
+    ],
     [
       'Prompt version',
       monitoring.prompt?.prompt_version || ready.prompt_version,
@@ -1227,11 +1425,16 @@ function OverviewView({ monitoring }) {
   )
 }
 
+// =========================================================
+// METRIC CARD
+// =========================================================
+
 function MetricCard({ label, value, Icon }) {
   return (
     <div className="stat-card">
       <div className="stat-card-top">
         <span>{label}</span>
+
         <span className="stat-icon">
           <Icon size={16} />
         </span>
@@ -1252,6 +1455,10 @@ function MetricCard({ label, value, Icon }) {
   )
 }
 
+// =========================================================
+// MODEL MONITORING
+// =========================================================
+
 function ModelView({ monitoring }) {
   const model = monitoring.model || {}
   const prompt = monitoring.prompt || {}
@@ -1264,6 +1471,7 @@ function ModelView({ monitoring }) {
           subtitle="Returned by /metadata/model"
           action={<Cpu size={17} />}
         />
+
         <InfoRows data={model} />
       </section>
 
@@ -1273,15 +1481,23 @@ function ModelView({ monitoring }) {
           subtitle="Returned by /metadata/prompt"
           action={<Zap size={17} />}
         />
+
         <InfoRows data={prompt} />
       </section>
     </div>
   )
 }
 
+// =========================================================
+// FEEDBACK ANALYTICS
+// =========================================================
+
 function FeedbackView({ stats }) {
   const data = stats || {}
   const total = Number(data.total_feedback) || 0
+
+  const positive = Number(data.positive_ratings) || 0
+  const negative = Number(data.negative_ratings) || 0
 
   return (
     <>
@@ -1311,19 +1527,18 @@ function FeedbackView({ stats }) {
         <div className="distribution">
           <div>
             <span>Positive</span>
+
             <b>
               {total
-                ? `${(
-                    (Number(data.positive_ratings) / total) *
-                    100
-                  ).toFixed(1)}%`
+                ? `${((positive / total) * 100).toFixed(1)}%`
                 : '0%'}
             </b>
+
             <i>
               <em
                 style={{
                   width: total
-                    ? `${(Number(data.positive_ratings) / total) * 100}%`
+                    ? `${(positive / total) * 100}%`
                     : '0%',
                 }}
               />
@@ -1332,20 +1547,19 @@ function FeedbackView({ stats }) {
 
           <div>
             <span>Negative</span>
+
             <b>
               {total
-                ? `${(
-                    (Number(data.negative_ratings) / total) *
-                    100
-                  ).toFixed(1)}%`
+                ? `${((negative / total) * 100).toFixed(1)}%`
                 : '0%'}
             </b>
+
             <i>
               <em
                 className="negative-bar"
                 style={{
                   width: total
-                    ? `${(Number(data.negative_ratings) / total) * 100}%`
+                    ? `${(negative / total) * 100}%`
                     : '0%',
                 }}
               />
@@ -1361,6 +1575,10 @@ function FeedbackView({ stats }) {
     </>
   )
 }
+
+// =========================================================
+// PIPELINE STATUS
+// =========================================================
 
 function PipelineView() {
   return (
@@ -1395,8 +1613,10 @@ function PipelineView() {
 
       <div className="dashboard-card unavailable-card">
         <AlertTriangle size={18} />
+
         <div>
           <strong>Pipeline execution status unavailable</strong>
+
           <p>
             The backend exposes no safe run, deployment, approval, or
             drift-status endpoint, so this page does not present
@@ -1408,12 +1628,24 @@ function PipelineView() {
   )
 }
 
+// =========================================================
+// API AND SYSTEM HEALTH
+// =========================================================
+
 function HealthView({ monitoring }) {
   const checks = [
     ['Service health', monitoring.health, 'status'],
     ['Readiness', monitoring.ready, 'ready'],
-    ['Model version at readiness', monitoring.ready, 'model_version'],
-    ['Prompt version at readiness', monitoring.ready, 'prompt_version'],
+    [
+      'Model version at readiness',
+      monitoring.ready,
+      'model_version',
+    ],
+    [
+      'Prompt version at readiness',
+      monitoring.ready,
+      'prompt_version',
+    ],
   ]
 
   return (
@@ -1442,6 +1674,10 @@ function HealthView({ monitoring }) {
   )
 }
 
+// =========================================================
+// INFORMATION ROWS
+// =========================================================
+
 function InfoRows({ data }) {
   const entries = Object.entries(data).filter(
     ([key]) =>
@@ -1465,6 +1701,10 @@ function InfoRows({ data }) {
   )
 }
 
+// =========================================================
+// UNAVAILABLE STATE
+// =========================================================
+
 function Unavailable({ text }) {
   return (
     <div className="unavailable">
@@ -1474,6 +1714,10 @@ function Unavailable({ text }) {
   )
 }
 
+// =========================================================
+// CARD HEADER
+// =========================================================
+
 function CardHeader({ title, subtitle, action }) {
   return (
     <div className="card-header">
@@ -1481,6 +1725,7 @@ function CardHeader({ title, subtitle, action }) {
         <h3>{title}</h3>
         <p>{subtitle}</p>
       </div>
+
       <span>{action}</span>
     </div>
   )
