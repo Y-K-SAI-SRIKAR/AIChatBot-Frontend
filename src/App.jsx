@@ -1,479 +1,975 @@
 
+
 import { useCallback, useEffect, useRef, useState } from 'react'
+
 import ReactMarkdown from 'react-markdown'
+
 import remarkGfm from 'remark-gfm'
 
+
+
 import {
+
   Activity, AlertTriangle, BarChart3, Check, ChevronDown, ChevronRight,
+
   Copy, Cpu, Database, FileCheck2, Gauge, Heart, LayoutDashboard,
+
   Menu, MessageCircle, MessageSquarePlus, MoreHorizontal, PackageSearch,
+
   PanelLeftClose, PanelLeftOpen, RefreshCw, Send, Settings2,
+
   ShieldCheck, Sparkles, ThumbsDown, ThumbsUp, TrendingUp, X, Zap,
+
 } from 'lucide-react'
+
+
 
 import './App.css'
 
+
+
 // =========================================================
+
 // API CONFIGURATION
+
 // =========================================================
+
+
 
 // Bedrock chatbot API: chat generation and product search only.
+
 const CHAT_API_BASE_URL = (
+
   import.meta.env.VITE_CHAT_API_URL ||
+
   'https://chatbotcontinuous.onrender.com'
+
 ).replace(/\/+$/, '')
+
+
 
 // Existing MLOps API: dashboard, metrics, feedback and monitoring.
+
 const API_BASE_URL = (
+
   import.meta.env.VITE_API_BASE_URL ||
+
   'https://aichatbot-continuospipeline.onrender.com'
+
 ).replace(/\/+$/, '')
 
+
+
 const NAV_ITEMS = [
+
   ['overview', 'Overview', LayoutDashboard],
+
   ['chat', 'Live Chat', MessageCircle],
+
   ['model', 'Model Monitoring', Cpu],
+
   ['feedback', 'Feedback Analytics', ThumbsUp],
+
   ['pipeline', 'Pipeline Status', Activity],
+
   ['health', 'API & System Health', ShieldCheck],
+
 ]
+
+
 
 const SUGGESTIONS = [
+
   'Find a laptop for programming under ₹70,000',
+
   'Compare headphones for daily use',
+
   'Recommend a monitor for coding and gaming',
+
   'Help me choose a smartphone',
+
 ]
+
+
 
 const PIPELINE = [
+
   ['User interaction', 'Conversations', MessageCircle],
+
   ['Feedback collection', 'Human signals', Heart],
+
   ['Data validation', 'Quality checks', FileCheck2],
+
   ['Data versioning', 'DVC snapshots', Database],
+
   ['Model training', 'Candidate model', Cpu],
+
   ['Evaluation', 'Quality gates', Gauge],
+
   ['Model approval', 'Release review', ShieldCheck],
+
   ['Deploy & monitor', 'Production loop', Activity],
+
 ]
 
+
+
 // =========================================================
+
 // HELPERS
+
 // =========================================================
+
+
 
 function makeId() {
+
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+
     return crypto.randomUUID()
+
   }
+
+
 
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+
 }
+
+
 
 function formatConfidence(value) {
+
   return typeof value === 'number'
+
     ? `${(value <= 1 ? value * 100 : value).toFixed(1)}%`
+
     : String(value)
+
 }
+
+
 
 function formatLatency(value) {
+
   return typeof value === 'number'
+
     ? value >= 1000
+
       ? `${(value / 1000).toFixed(2)}s`
+
       : `${value}ms`
+
     : String(value)
+
 }
+
+
 
 function formatValue(value) {
+
   if (value === undefined || value === null || value === '') {
+
     return 'Not available from backend'
+
   }
+
+
 
   if (typeof value === 'object') {
+
     return JSON.stringify(value)
+
   }
+
+
 
   return String(value)
+
 }
+
+
 
 function errorText(error) {
+
   if (error?.status === 401) {
+
     return 'The backend requires authentication.'
+
   }
+
+
 
   if (error?.status >= 500) {
+
     return 'The backend is temporarily unavailable. Try again.'
+
   }
+
+
 
   if (error instanceof TypeError) {
+
     return 'Could not reach the backend. Check the API URL and CORS configuration.'
+
   }
+
+
 
   return error?.message || 'The backend request failed.'
+
 }
+
+
 
 // Existing MLOps API requests.
+
 async function fetchJson(path, options = {}) {
+
   const response = await fetch(`${API_BASE_URL}${path}`, options)
 
+
+
   let payload = null
 
+
+
   try {
+
     payload = await response.json()
+
   } catch {
+
     // Some endpoints may return an empty response.
+
   }
+
+
 
   if (!response.ok) {
+
     const error = new Error(
+
       payload?.detail || `Request failed (${response.status})`
+
     )
 
+
+
     error.status = response.status
+
     throw error
+
   }
 
+
+
   return payload
+
 }
+
+
 
 // New Bedrock API requests.
+
 async function fetchChatJson(path, options = {}) {
+
   const response = await fetch(`${CHAT_API_BASE_URL}${path}`, options)
+
+
 
   let payload = null
 
+
+
   try {
+
     payload = await response.json()
+
   } catch {
+
     // Handle invalid or empty JSON.
+
   }
+
+
 
   if (!response.ok) {
+
     const error = new Error(
+
       payload?.detail || `Chat request failed (${response.status})`
+
     )
 
+
+
     error.status = response.status
+
     throw error
+
   }
 
+
+
   return payload
+
 }
 
+
+
 function parsePrometheus(text) {
+
   const values = {}
 
+
+
   text.split('\n').forEach((line) => {
+
     if (!line || line.startsWith('#')) return
+
+
 
     const match = line.match(
       /^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{[^}]*\})?\s+([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)$/
     )
 
+
+
     if (match) {
+
       values[match[1]] = Number(match[2])
+
     }
+
   })
+
+
 
   return values
+
 }
+
+
 
 async function fetchMetrics() {
+
   const response = await fetch(`${API_BASE_URL}/metrics`)
+
   const text = await response.text()
 
+
+
   if (!response.ok) {
+
     const error = new Error(
+
       response.status === 401
+
         ? 'Metrics authentication is required.'
+
         : `Metrics request failed (${response.status})`
+
     )
 
+
+
     error.status = response.status
+
     throw error
+
   }
+
+
 
   return {
+
     text,
+
     parsed: parsePrometheus(text),
+
   }
+
 }
 
+
+
 // =========================================================
+
 // MAIN APP
+
 // =========================================================
+
+
 
 function App() {
+
   const [activeView, setActiveView] = useState('overview')
+
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
   const [collapsed, setCollapsed] = useState(false)
 
+
+
   const [conversationId, setConversationId] = useState(makeId)
+
   const [conversations, setConversations] = useState([])
 
+
+
   const [activeConversation, setActiveConversation] = useState({
+
     id: null,
+
     messages: [],
+
   })
+
+
 
   const [composer, setComposer] = useState('')
+
   const [sending, setSending] = useState(false)
+
   const [expanded, setExpanded] = useState(null)
+
   const [feedbackMessage, setFeedbackMessage] = useState(null)
 
+
+
   const [monitoring, setMonitoring] = useState({
+
     loading: true,
+
     refreshing: false,
+
     error: '',
+
     updatedAt: null,
+
     health: null,
+
     ready: null,
+
     stats: null,
+
     model: null,
+
     prompt: null,
+
     metrics: null,
+
   })
+
+
 
   const bottomRef = useRef(null)
 
+
+
   // =======================================================
+
   // BACKEND MONITORING
+
   // =======================================================
+
+
 
   const loadMonitoring = useCallback(async (refresh = false) => {
+
     setMonitoring((current) => ({
+
       ...current,
+
       loading: !refresh && !current.updatedAt,
+
       refreshing: refresh,
+
       error: '',
+
     }))
 
+
+
     const results = await Promise.allSettled([
+
       fetchJson('/health'),
+
       fetchJson('/ready'),
+
       fetchJson('/feedback/stats'),
+
       fetchJson('/metadata/model'),
+
       fetchJson('/metadata/prompt'),
+
       fetchMetrics(),
+
     ])
 
+
+
     const fields = [
+
       'health',
+
       'ready',
+
       'stats',
+
       'model',
+
       'prompt',
+
       'metrics',
+
     ]
 
+
+
     const next = {
+
       updatedAt: new Date().toISOString(),
+
       refreshing: false,
+
       loading: false,
+
     }
+
+
 
     const errors = []
 
+
+
     results.forEach((result, index) => {
+
       const field = fields[index]
 
+
+
       if (result.status === 'fulfilled') {
+
         next[field] = result.value
+
       } else {
+
         next[field] = null
+
         errors.push(`${field}: ${errorText(result.reason)}`)
+
       }
+
     })
+
+
 
     setMonitoring((current) => ({
+
       ...current,
+
       ...next,
+
       error: errors.join(' '),
+
     }))
+
   }, [])
 
+
+
   useEffect(() => {
+
     loadMonitoring()
 
+
+
     const timer = setInterval(() => {
+
       loadMonitoring(true)
+
     }, 30000)
 
+
+
     return () => clearInterval(timer)
+
   }, [loadMonitoring])
 
+
+
   useEffect(() => {
+
     bottomRef.current?.scrollIntoView({
+
       behavior: 'smooth',
+
     })
+
   }, [activeConversation.messages, sending])
 
+
+
   // =======================================================
+
   // CONVERSATION HISTORY SYNCHRONIZATION
+
   // =======================================================
+
+
 
   useEffect(() => {
+
     if (!conversationId || !activeConversation.messages.length) {
+
       return
+
     }
+
+
 
     setConversations((current) =>
+
       current.map((item) =>
+
         item.id === conversationId
+
           ? {
+
               ...item,
+
               messages: activeConversation.messages,
+
             }
+
           : item
+
       )
+
     )
+
   }, [activeConversation.messages, conversationId])
 
-  // =======================================================
-  // NEW CONVERSATION
+
+
   // =======================================================
 
+  // NEW CONVERSATION
+
+  // =======================================================
+
+
+
   const startNewChat = useCallback(() => {
+
     if (activeConversation.messages.length) {
+
       setConversations((current) =>
+
         current.map((item) =>
+
           item.id === conversationId
+
             ? {
+
                 ...item,
+
                 messages: activeConversation.messages,
+
               }
+
             : item
+
         )
+
       )
+
     }
+
+
 
     const id = makeId()
 
+
+
     setConversationId(id)
 
+
+
     setActiveConversation({
+
       id,
+
       messages: [],
+
     })
 
+
+
     setComposer('')
+
     setExpanded(null)
+
     setFeedbackMessage(null)
+
     setSidebarOpen(false)
+
     setActiveView('chat')
+
   }, [activeConversation.messages, conversationId])
 
-  // =======================================================
-  // SEND CHAT MESSAGE
+
+
   // =======================================================
 
+  // SEND CHAT MESSAGE
+
+  // =======================================================
+
+
+
   const sendMessage = useCallback(async (value, retryId = null) => {
+
     const text = value.trim()
+
+
 
     if (!text || sending) return
 
+
+
     const requestId = makeId()
+
     const assistantId = retryId || makeId()
+
     const currentMessages = activeConversation.messages
+
+
 
     let previousMessages = currentMessages
 
+
+
     // Exclude the failed response and its user message on retry.
+
     if (retryId) {
+
       const failedIndex = currentMessages.findIndex(
+
         (item) => item.id === retryId
+
       )
+
+
 
       previousMessages = failedIndex >= 0
+
         ? currentMessages.slice(0, Math.max(0, failedIndex - 1))
+
         : currentMessages
+
     }
 
+
+
     // Bedrock expects role/content objects.
+
     const history = previousMessages
+
       .filter((item) =>
+
         ['user', 'assistant'].includes(item.role) &&
+
         item.text &&
+
         item.status !== 'error' &&
+
         item.status !== 'loading'
+
       )
+
       .map((item) => ({
+
         role: item.role,
+
         content: item.text,
+
       }))
+
       .slice(-10)
 
+
+
     if (retryId) {
-      setActiveConversation((current) => ({
-        ...current,
-        messages: current.messages.map((item) =>
-          item.id === retryId
-            ? {
-                ...item,
-                status: 'loading',
-                requestId,
-                error: '',
-              }
-            : item
-        ),
-      }))
-    } else {
-      const userMessage = {
-        id: makeId(),
-        role: 'user',
-        text,
-      }
 
       setActiveConversation((current) => ({
+
         ...current,
-        messages: [
-          ...current.messages,
-          userMessage,
-          {
-            id: assistantId,
-            role: 'assistant',
-            status: 'loading',
-            text: '',
-            requestId,
-          },
-        ],
+
+        messages: current.messages.map((item) =>
+
+          item.id === retryId
+
+            ? {
+
+                ...item,
+
+                status: 'loading',
+
+                requestId,
+
+                error: '',
+
+              }
+
+            : item
+
+        ),
+
       }))
+
+    } else {
+
+      const userMessage = {
+
+        id: makeId(),
+
+        role: 'user',
+
+        text,
+
+      }
+
+
+
+      setActiveConversation((current) => ({
+
+        ...current,
+
+        messages: [
+
+          ...current.messages,
+
+          userMessage,
+
+          {
+
+            id: assistantId,
+
+            role: 'assistant',
+
+            status: 'loading',
+
+            text: '',
+
+            requestId,
+
+          },
+
+        ],
+
+      }))
+
+
 
       setComposer('')
 
+
+
       setConversations((current) => [
+
         {
+
           id: conversationId,
+
           title: text,
+
           messages: [
+
             ...currentMessages,
+
             userMessage,
+
           ],
+
           time: 'Just now',
+
         },
+
         ...current.filter((item) => item.id !== conversationId),
+
       ].slice(0, 8))
+
     }
+
+
 
     setSending(true)
 
+
+
     try {
+
       // Chat goes ONLY to the Bedrock API.
+
       const payload = await fetchChatJson('/chat', {
+
         method: 'POST',
+
         headers: {
+
           'Content-Type': 'application/json',
+
         },
+
         body: JSON.stringify({
+
           message: text,
+
           history,
+
         }),
+
       })
+
+
 
       const answer = payload?.response || payload?.answer
 
+
+
       if (!answer || typeof answer !== 'string') {
+
         throw new Error(
+
           'The Bedrock API returned no assistant response.'
+
         )
+
+      }
+
+
+
+      // Keep the Bedrock /chat request and payload unchanged.
+      // Register the completed turn separately with the MLOps API.
+      const feedbackRequestId = payload.request_id || requestId
+      let feedbackRegistrationError = ''
+
+      try {
+        await fetchJson('/feedback/register-turn', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            request_id: feedbackRequestId,
+            message: text,
+            response: answer,
+            model: payload.model || 'Bedrock chat service',
+          }),
+        })
+      } catch (registrationError) {
+        feedbackRegistrationError = errorText(registrationError)
       }
 
       setActiveConversation((current) => ({
@@ -484,7 +980,8 @@ function App() {
                 ...item,
                 status: 'complete',
                 text: answer,
-                requestId: payload.request_id || null,
+                requestId: feedbackRegistrationError ? null : feedbackRequestId,
+                feedbackRegistrationError,
                 metadata: payload,
                 feedback: {
                   rating: null,
@@ -496,1379 +993,2755 @@ function App() {
             : item
         ),
       }))
+
     } catch (error) {
+
       setActiveConversation((current) => ({
+
         ...current,
+
         messages: current.messages.map((item) =>
+
           item.id === assistantId
+
             ? {
+
                 ...item,
+
                 status: 'error',
+
                 requestId,
+
                 error: errorText(error),
+
               }
+
             : item
+
         ),
+
       }))
+
     } finally {
+
       setSending(false)
+
     }
+
   }, [activeConversation.messages, conversationId, sending])
 
-  // =======================================================
-  // RETRY FAILED MESSAGE
+
+
   // =======================================================
 
+  // RETRY FAILED MESSAGE
+
+  // =======================================================
+
+
+
   const retryMessage = (message) => {
+
     const index = activeConversation.messages.findIndex(
+
       (item) => item.id === message.id
+
     )
+
+
 
     const previous = activeConversation.messages[index - 1]
 
+
+
     if (previous?.role === 'user') {
+
       sendMessage(previous.text, message.id)
+
     }
+
   }
 
+
+
   // =======================================================
+
   // UPDATE MESSAGE
+
   // =======================================================
+
+
 
   const updateMessage = (id, changes) => {
+
     setActiveConversation((current) => ({
+
       ...current,
+
       messages: current.messages.map((item) =>
+
         item.id === id
+
           ? { ...item, ...changes }
+
           : item
+
       ),
+
     }))
+
   }
 
+
+
   // =======================================================
+
   // FEEDBACK SUBMISSION
+
   // =======================================================
+
+
 
   const submitFeedback = async (message) => {
+
     if (
+
       !message.requestId ||
+
       !message.feedback?.rating ||
+
       message.feedback.status === 'submitting' ||
+
       message.feedback.status === 'submitted'
+
     ) {
+
       return
+
     }
+
+
 
     updateMessage(message.id, {
+
       feedback: {
+
         ...message.feedback,
+
         status: 'submitting',
+
         error: '',
+
       },
+
     })
+
+
 
     try {
+
       // Feedback continues to use the existing MLOps API.
+
       await fetchJson('/feedback', {
+
         method: 'POST',
+
         headers: {
+
           'Content-Type': 'application/json',
+
         },
+
         body: JSON.stringify({
+
           request_id: message.requestId,
+
           rating: message.feedback.rating,
+
           corrected_intent: null,
+
           corrected_response: null,
+
           textual_feedback: message.feedback.text.trim() || null,
+
         }),
+
       })
 
+
+
       updateMessage(message.id, {
+
         feedback: {
+
           ...message.feedback,
+
           status: 'submitted',
+
           error: '',
+
         },
+
       })
+
+
 
       loadMonitoring(true)
+
     } catch (error) {
+
       updateMessage(message.id, {
+
         feedback: {
+
           ...message.feedback,
+
           status: 'error',
+
           error:
+
             error.status === 409
+
               ? 'Feedback for this response was already submitted.'
+
               : errorText(error),
+
         },
+
       })
+
     }
+
   }
 
+
+
   // =======================================================
+
   // SWITCH CONVERSATION
+
   // =======================================================
+
+
 
   const switchConversation = (conversation) => {
+
     setConversationId(conversation.id)
 
+
+
     setActiveConversation({
+
       id: conversation.id,
+
       messages: conversation.messages || [],
+
     })
 
+
+
     setActiveView('chat')
+
     setSidebarOpen(false)
+
   }
 
+
+
   const activeTitle =
+
     NAV_ITEMS.find(([key]) => key === activeView)?.[1] ||
+
     'Overview'
 
+
+
   const backendConnected = Boolean(
+
     monitoring.health &&
+
     monitoring.health.status === 'AI ChatBot API Running'
+
   )
 
+
+
   return (
+
     <div className="app-shell">
+
       <aside
+
         className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''} ${
+
           sidebarOpen ? 'sidebar--open' : ''
+
         }`}
+
       >
+
         <div className="sidebar-top">
+
           <div className="brand">
+
             <div className="brand-mark">
+
               <Sparkles size={18} />
+
             </div>
+
+
 
             {!collapsed && (
+
               <div>
+
                 <strong>AI Chatbot</strong>
+
                 <span>MLOps Control Center</span>
+
               </div>
+
             )}
+
           </div>
+
+
 
           <button
+
             className="icon-button sidebar-close"
+
             onClick={() => setSidebarOpen(false)}
+
             aria-label="Close navigation"
+
           >
+
             <X size={18} />
+
           </button>
+
         </div>
 
+
+
         <button
+
           className="new-chat-button"
+
           onClick={startNewChat}
+
         >
+
           <MessageSquarePlus size={18} />
+
           {!collapsed && 'New chat'}
+
         </button>
 
+
+
         <nav className="main-nav" aria-label="Main navigation">
+
           {NAV_ITEMS.map(([key, label, Icon]) => (
+
             <button
+
               key={key}
+
               className={
+
                 activeView === key
+
                   ? 'nav-item active'
+
                   : 'nav-item'
+
               }
+
               onClick={() => {
+
                 setActiveView(key)
+
                 setSidebarOpen(false)
+
               }}
+
             >
+
               <Icon size={18} />
+
               {!collapsed && <span>{label}</span>}
+
             </button>
+
           ))}
+
         </nav>
 
+
+
         {!collapsed && (
+
           <div className="sidebar-section recent-section">
+
             <div className="section-label">
+
               <span>Recent conversations</span>
+
               <MoreHorizontal size={15} />
+
             </div>
 
+
+
             {conversations.length ? (
+
               conversations.map((item) => (
+
                 <button
+
                   className="recent-chat"
+
                   key={item.id}
+
                   onClick={() => switchConversation(item)}
+
                 >
+
                   <span>{item.title}</span>
+
                   <small>{item.time}</small>
+
                 </button>
+
               ))
+
             ) : (
+
               <p className="empty-sidebar">
+
                 No conversations this session.
+
               </p>
+
             )}
+
           </div>
+
         )}
 
+
+
         <div className="sidebar-bottom">
+
           {!collapsed && (
+
             <div className="system-card">
+
               <div className="system-heading">
+
                 <span className="live-dot" />
+
                 Backend-connected UI
+
               </div>
+
+
 
               <p>Live status is read from the API.</p>
 
+
+
               <span className="demo-pill">
+
                 No simulated metrics
+
               </span>
+
             </div>
+
           )}
+
+
 
           <div className="profile">
+
             <div className="avatar">ML</div>
 
+
+
             {!collapsed && (
+
               <div>
+
                 <strong>Presentation workspace</strong>
+
                 <span>No account required</span>
+
               </div>
+
             )}
 
+
+
             <Settings2
+
               size={16}
+
               className="profile-settings"
+
             />
+
           </div>
+
         </div>
 
+
+
         <button
+
           className="collapse-button"
+
           onClick={() => setCollapsed((value) => !value)}
+
           aria-label={
+
             collapsed ? 'Expand sidebar' : 'Collapse sidebar'
+
           }
+
         >
+
           {collapsed ? (
+
             <PanelLeftOpen size={18} />
+
           ) : (
+
             <PanelLeftClose size={18} />
+
           )}
+
         </button>
+
       </aside>
 
+
+
       <main className="main-area">
+
         <header className="topbar">
+
           <button
+
             className="mobile-menu icon-button"
+
             onClick={() => setSidebarOpen(true)}
+
             aria-label="Open navigation"
+
           >
+
             <Menu size={21} />
+
           </button>
 
+
+
           <div>
+
             <p className="eyebrow">
+
               AI Chatbot · Continuous Learning
+
             </p>
+
             <h1>{activeTitle}</h1>
+
           </div>
+
+
 
           <div className="topbar-actions">
+
             <div className="assistant-status">
+
               <span
+
                 className={
+
                   backendConnected
+
                     ? 'live-dot'
+
                     : 'live-dot offline-dot'
+
                 }
+
               />
 
+
+
               <span>
+
                 {backendConnected
+
                   ? 'MLOps backend connected'
+
                   : monitoring.loading
+
                     ? 'Checking backend'
+
                     : 'MLOps backend unavailable'}
+
               </span>
+
             </div>
+
+
 
             <div className="top-avatar">ML</div>
+
           </div>
+
         </header>
 
+
+
         {activeView === 'chat' ? (
+
           <ChatView
+
             conversation={activeConversation}
+
             composer={composer}
+
             setComposer={setComposer}
+
             sendMessage={sendMessage}
+
             sending={sending}
+
             expanded={expanded}
+
             setExpanded={setExpanded}
+
             feedbackMessage={feedbackMessage}
+
             setFeedbackMessage={setFeedbackMessage}
+
             updateMessage={updateMessage}
+
             submitFeedback={submitFeedback}
+
             retryMessage={retryMessage}
+
             bottomRef={bottomRef}
+
           />
+
         ) : (
+
           <Dashboard
+
             view={activeView}
+
             monitoring={monitoring}
+
             refresh={() => loadMonitoring(true)}
+
           />
+
         )}
+
       </main>
+
     </div>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // CHAT VIEW
+
 // =========================================================
+
+
 
 function ChatView({
+
   conversation,
+
   composer,
+
   setComposer,
+
   sendMessage,
+
   sending,
+
   expanded,
+
   setExpanded,
+
   feedbackMessage,
+
   setFeedbackMessage,
+
   updateMessage,
+
   submitFeedback,
+
   retryMessage,
+
   bottomRef,
+
 }) {
+
   const messages = conversation.messages
 
+
+
   const keyDown = (event) => {
+
     if (event.key === 'Enter' && !event.shiftKey) {
+
       event.preventDefault()
+
       sendMessage(composer)
+
     }
+
   }
 
+
+
   return (
+
     <section className="content chat-content">
+
       <div
+
         className={`chat-panel ${
+
           !messages.length ? 'chat-panel--empty' : ''
+
         }`}
+
       >
+
         {!messages.length ? (
+
           <div className="welcome">
+
             <div className="welcome-icon">
+
               <Sparkles size={25} />
+
             </div>
 
+
+
             <p className="kicker">
+
               Live Bedrock inference workspace
+
             </p>
+
+
 
             <h2>
+
               Explore the assistant.
+
               <br />
+
               <em>Inspect every response.</em>
+
             </h2>
 
+
+
             <p className="welcome-copy">
+
               Ask questions, discover products and compare
+
               shopping options with live search sources.
+
             </p>
 
+
+
             <div className="suggestion-grid">
+
               {SUGGESTIONS.map((item) => (
+
                 <button
+
                   key={item}
+
                   className="suggestion-card"
+
                   onClick={() => setComposer(item)}
+
                 >
+
                   <span className="suggestion-icon">
+
                     <PackageSearch size={17} />
+
                   </span>
+
+
 
                   <span>{item}</span>
 
+
+
                   <ChevronRight size={15} />
+
                 </button>
+
               ))}
+
             </div>
+
           </div>
+
         ) : (
+
           <div className="message-list" aria-live="polite">
+
             <div className="conversation-date">
+
               <span>Current conversation</span>
+
             </div>
+
+
 
             {messages.map((message) => (
+
               <MessageBubble
+
                 key={message.id}
+
                 message={message}
+
                 expanded={expanded === message.id}
+
                 setExpanded={setExpanded}
+
                 feedbackMessage={feedbackMessage}
+
                 setFeedbackMessage={setFeedbackMessage}
+
                 updateMessage={updateMessage}
+
                 submitFeedback={submitFeedback}
+
                 retryMessage={retryMessage}
+
               />
+
             ))}
 
+
+
             <div ref={bottomRef} />
+
           </div>
+
         )}
 
+
+
         <form
+
           className="composer-wrap"
+
           onSubmit={(event) => {
+
             event.preventDefault()
+
             sendMessage(composer)
+
           }}
+
         >
+
           <div className="composer">
+
             <textarea
+
               value={composer}
+
               maxLength={1000}
+
               onChange={(event) => setComposer(event.target.value)}
+
               onKeyDown={keyDown}
+
               placeholder="Ask the shopping assistant..."
+
               rows={1}
+
               aria-label="Message the assistant"
+
               disabled={sending}
+
             />
 
+
+
             <div className="composer-footer">
+
               <span>
+
                 <Sparkles size={12} />
+
                 Bedrock AI · {composer.length}/1000
+
               </span>
 
+
+
               <button
+
                 className="send-button"
+
                 type="submit"
+
                 disabled={!composer.trim() || sending}
+
                 aria-label="Send message"
+
               >
+
                 {sending ? (
+
                   <RefreshCw className="spin" size={18} />
+
                 ) : (
+
                   <Send size={18} />
+
                 )}
+
               </button>
+
             </div>
+
           </div>
+
+
 
           <p className="composer-hint">
+
             Press <kbd>Enter</kbd> to send <span>·</span>{' '}
+
             <kbd>Shift + Enter</kbd> for a new line
+
           </p>
+
         </form>
+
       </div>
+
     </section>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // MESSAGE BUBBLE
+
 // =========================================================
+
+
 
 function MessageBubble({
+
   message,
+
   expanded,
+
   setExpanded,
+
   feedbackMessage,
+
   setFeedbackMessage,
+
   updateMessage,
+
   submitFeedback,
+
   retryMessage,
+
 }) {
+
   if (message.role === 'user') {
+
     return (
+
       <div className="message-row user-row">
+
         <div className="message user-message">
+
           {message.text}
+
         </div>
+
+
 
         <div className="message-avatar user-avatar">ML</div>
+
       </div>
+
     )
+
   }
+
+
 
   if (message.status === 'loading') {
+
     return (
+
       <div className="message-row assistant-row">
+
         <div className="message-avatar assistant-avatar">
+
           <Sparkles size={15} />
+
         </div>
+
+
 
         <div className="message assistant-message loading-message">
+
           <span className="typing-dot" />
+
           <span className="typing-dot" />
+
           <span className="typing-dot" />
+
+
 
           <span className="loading-label">
+
             Searching and generating response...
+
           </span>
+
         </div>
+
       </div>
+
     )
+
   }
+
+
 
   if (message.status === 'error') {
+
     return (
+
       <div className="message-row assistant-row">
+
         <div className="message-avatar assistant-avatar">
+
           <Sparkles size={15} />
+
         </div>
+
+
 
         <div className="message assistant-message error-message">
+
           <strong>Request failed.</strong>
+
           <p>{message.error}</p>
 
+
+
           <button
+
             className="retry-button"
+
             onClick={() => retryMessage(message)}
+
           >
+
             <RefreshCw size={14} /> Retry
+
           </button>
+
         </div>
+
       </div>
+
     )
+
   }
+
+
 
   const feedback = message.feedback || {
+
     rating: null,
+
     text: '',
+
     status: 'idle',
+
     error: '',
+
   }
 
+
+
   // Sources returned by Tavily through the Bedrock API.
+
   const sources = Array.isArray(message.metadata?.sources)
+
     ? message.metadata.sources
+
     : []
 
+
+
   return (
+
     <div className="message-row assistant-row">
+
       <div className="message-avatar assistant-avatar">
+
         <Sparkles size={15} />
+
       </div>
 
+
+
       <div className="assistant-stack">
+
         <div className="message assistant-message">
+
           <div className="message-text">
+
             <ReactMarkdown
+
               remarkPlugins={[remarkGfm]}
+
               components={{
+
                 a: ({ href, children, ...props }) => {
+
                   const safeHref =
+
                     href && /^https?:\/\//i.test(href)
+
                       ? href
+
                       : undefined
 
+
+
                   if (!safeHref) {
+
                     return <span>{children}</span>
+
                   }
 
+
+
                   return (
+
                     <a
+
                       {...props}
+
                       href={safeHref}
+
                       target="_blank"
+
                       rel="noopener noreferrer"
+
                     >
+
                       {children}
+
                     </a>
+
                   )
+
                 },
+
               }}
+
             >
+
               {message.text || ''}
+
             </ReactMarkdown>
+
           </div>
 
+
+
           {/* Additional clickable search sources */}
+
           {sources.length > 0 && (
+
             <div className="chat-sources">
+
               <strong>Search sources</strong>
 
+
+
               <div className="chat-source-list">
+
                 {sources.map((source, index) => {
+
                   const safeUrl =
+
                     typeof source.url === 'string' &&
+
                     /^https?:\/\//i.test(source.url)
+
                       ? source.url
+
                       : null
+
+
 
                   if (!safeUrl) return null
 
+
+
                   return (
+
                     <a
+
                       key={`${safeUrl}-${index}`}
+
                       href={safeUrl}
+
                       target="_blank"
+
                       rel="noopener noreferrer"
+
                       className="chat-source-link"
+
                     >
+
                       <span>
+
                         {source.title || 'View source'}
+
                       </span>
 
+
+
                       <ChevronRight size={14} />
+
                     </a>
+
                   )
+
                 })}
+
               </div>
+
             </div>
+
           )}
+
         </div>
+
+
 
         <div className="assistant-tools">
+
           <button
+
             className="tool-button"
+
             onClick={() =>
+
               setExpanded(expanded ? null : message.id)
+
             }
+
           >
+
             <Zap size={13} />
+
             Response metadata
 
+
+
             <ChevronDown
+
               size={13}
+
               className={expanded ? 'rotate' : ''}
+
             />
+
           </button>
 
+
+
           <div className="feedback-controls">
+
             <span>Helpful?</span>
 
+
+
             <button
+
               className={
+
                 feedback.rating === 'positive'
+
                   ? 'feedback-button chosen'
+
                   : 'feedback-button'
+
               }
+
               onClick={() => {
+
                 setFeedbackMessage(message.id)
 
+
+
                 updateMessage(message.id, {
+
                   feedback: {
+
                     ...feedback,
+
                     rating: 'positive',
+
                     error: '',
+
                   },
+
                 })
+
               }}
+
               aria-label="Choose positive feedback"
+
             >
+
               <ThumbsUp size={14} />
+
             </button>
+
+
 
             <button
+
               className={
+
                 feedback.rating === 'negative'
+
                   ? 'feedback-button chosen negative'
+
                   : 'feedback-button'
+
               }
+
               onClick={() => {
+
                 setFeedbackMessage(message.id)
 
+
+
                 updateMessage(message.id, {
+
                   feedback: {
+
                     ...feedback,
+
                     rating: 'negative',
+
                     error: '',
+
                   },
+
                 })
+
               }}
+
               aria-label="Choose negative feedback"
+
             >
+
               <ThumbsDown size={14} />
+
             </button>
+
           </div>
+
         </div>
+
+
 
         {expanded && (
+
           <ResponseMetadata metadata={message.metadata} />
+
         )}
+
+
 
         {feedbackMessage === message.id &&
+
           feedback.status !== 'submitted' && (
+
             <div className="feedback-form">
+
               <p>
+
                 Select a rating, optionally add context, then submit.
+
               </p>
 
+
+
               <div className="rating-picker">
-                <button
-                  type="button"
-                  className={
-                    feedback.rating === 'positive'
-                      ? 'rating-choice selected'
-                      : 'rating-choice'
-                  }
-                  onClick={() =>
-                    updateMessage(message.id, {
-                      feedback: {
-                        ...feedback,
-                        rating: 'positive',
-                        error: '',
-                      },
-                    })
-                  }
-                >
-                  <ThumbsUp size={13} /> Positive
-                </button>
 
                 <button
+
                   type="button"
+
                   className={
-                    feedback.rating === 'negative'
-                      ? 'rating-choice selected negative'
+
+                    feedback.rating === 'positive'
+
+                      ? 'rating-choice selected'
+
                       : 'rating-choice'
+
                   }
+
                   onClick={() =>
+
                     updateMessage(message.id, {
+
                       feedback: {
+
                         ...feedback,
-                        rating: 'negative',
+
+                        rating: 'positive',
+
                         error: '',
+
                       },
+
                     })
+
                   }
+
                 >
-                  <ThumbsDown size={13} /> Negative
+
+                  <ThumbsUp size={13} /> Positive
+
                 </button>
+
+
+
+                <button
+
+                  type="button"
+
+                  className={
+
+                    feedback.rating === 'negative'
+
+                      ? 'rating-choice selected negative'
+
+                      : 'rating-choice'
+
+                  }
+
+                  onClick={() =>
+
+                    updateMessage(message.id, {
+
+                      feedback: {
+
+                        ...feedback,
+
+                        rating: 'negative',
+
+                        error: '',
+
+                      },
+
+                    })
+
+                  }
+
+                >
+
+                  <ThumbsDown size={13} /> Negative
+
+                </button>
+
               </div>
+
+
 
               <textarea
+
                 value={feedback.text}
+
                 onChange={(event) =>
+
                   updateMessage(message.id, {
+
                     feedback: {
+
                       ...feedback,
+
                       text: event.target.value,
+
                     },
+
                   })
+
                 }
+
                 placeholder="Optional feedback..."
+
                 rows={2}
+
               />
 
+
+
               <div className="feedback-actions">
+
                 <button
+
                   type="button"
+
                   onClick={() => submitFeedback(message)}
+
                   disabled={
+
                     !feedback.rating ||
+
                     feedback.status === 'submitting' ||
+
                     !message.requestId
+
                   }
+
                 >
+
                   {feedback.status === 'submitting' ? (
+
                     <RefreshCw className="spin" size={13} />
+
                   ) : (
+
                     <Send size={13} />
+
                   )}
 
+
+
                   Submit feedback
+
                 </button>
 
+
+
                 {!message.requestId && (
+
                   <span className="feedback-error">
-                    Feedback requires a request ID from the MLOps backend.
+
+                    This chat turn could not be registered with the MLOps backend. Refresh and try again.
+
                   </span>
+
                 )}
+
+
 
                 {feedback.error && (
+
                   <span className="feedback-error">
+
                     {feedback.error}
+
                   </span>
+
                 )}
+
               </div>
+
             </div>
+
           )}
+
+
 
         {feedback.status === 'submitted' && (
+
           <div className="feedback-success">
+
             <Check size={14} /> Feedback submitted.
+
           </div>
+
         )}
+
       </div>
+
     </div>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // RESPONSE METADATA
+
 // =========================================================
+
+
 
 function ResponseMetadata({ metadata = {} }) {
+
   const items = [
+
     ['Model', metadata.model],
+
     ['Sources returned', metadata.sources?.length],
+
     ['Request ID', metadata.request_id, true],
+
     ['Intent', metadata.predicted_intent],
+
     [
+
       'Confidence',
+
       metadata.intent_confidence !== null &&
+
       metadata.intent_confidence !== undefined
+
         ? formatConfidence(metadata.intent_confidence)
+
         : null,
+
     ],
+
     ['Model version', metadata.model_version],
+
     ['Prompt version', metadata.prompt_version],
+
     [
+
       'Latency',
+
       metadata.latency_ms !== null &&
+
       metadata.latency_ms !== undefined
+
         ? formatLatency(metadata.latency_ms)
+
         : null,
+
     ],
+
   ].filter(
+
     (item) =>
+
       item[1] !== undefined &&
+
       item[1] !== null &&
+
       item[1] !== ''
+
   )
 
+
+
   return (
+
     <div className="metadata-grid">
+
       {items.length ? (
+
         items.map(([label, value, copyable]) => (
+
           <div key={label}>
+
             <span>{label}</span>
 
+
+
             <strong>
+
               {String(value).slice(0, 32)}
+
               {String(value).length > 32 ? '…' : ''}
+
             </strong>
 
+
+
             {copyable && (
+
               <button
+
                 className="copy-button"
+
                 onClick={() =>
+
                   navigator.clipboard?.writeText(String(value))
+
                 }
+
                 aria-label={`Copy ${label}`}
+
               >
+
                 <Copy size={11} />
+
               </button>
+
             )}
+
           </div>
+
         ))
+
       ) : (
+
         <span className="metadata-empty">
+
           No optional metadata was returned.
+
         </span>
+
       )}
+
     </div>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // DASHBOARD
+
 // =========================================================
+
+
 
 function Dashboard({ view, monitoring, refresh }) {
+
   const { loading, refreshing, error, updatedAt } = monitoring
 
+
+
   const updated = updatedAt
+
     ? new Date(updatedAt).toLocaleTimeString()
+
     : 'Not refreshed'
 
+
+
   return (
+
     <section className="content dashboard-content">
+
       <div className="dashboard-intro">
+
         <div>
+
           <div className="title-with-badge">
+
             <span className="demo-badge">
+
               <span /> Live backend data
+
             </span>
+
+
 
             <span className="muted-label">
+
               Last refresh: {updated}
+
             </span>
+
           </div>
 
+
+
           <h2>
+
             {view === 'overview'
+
               ? 'Operational clarity for your AI'
+
               : NAV_ITEMS.find(([key]) => key === view)?.[1]}
+
           </h2>
 
+
+
           <p>{viewDescription(view)}</p>
+
         </div>
+
+
 
         <button
+
           className="refresh-control"
+
           onClick={refresh}
+
           disabled={refreshing}
+
         >
+
           {refreshing ? (
+
             <RefreshCw className="spin" size={15} />
+
           ) : (
+
             <RefreshCw size={15} />
+
           )}
 
+
+
           {refreshing ? 'Refreshing' : 'Refresh data'}
+
         </button>
+
       </div>
 
+
+
       {error && (
+
         <div className="backend-alert">
+
           <AlertTriangle size={16} />
+
           <span>{error}</span>
+
         </div>
+
       )}
+
+
 
       {loading ? (
+
         <LoadingPanel />
+
       ) : (
+
         <ViewContent view={view} monitoring={monitoring} />
+
       )}
+
     </section>
+
   )
+
 }
+
+
 
 function viewDescription(view) {
+
   return {
+
     overview:
+
       'Live aggregates and metadata returned by the deployed MLOps backend.',
+
     model:
+
       'Only model, prompt, and inference data exposed by the backend is shown.',
+
     feedback:
+
       'Feedback counts are read from the deployed feedback statistics endpoint.',
+
     pipeline:
+
       'Architecture stages are shown read-only unless the backend exposes execution status.',
+
     health:
+
       'Connectivity and readiness are based on MLOps backend responses.',
+
   }[view]
+
 }
+
+
 
 function LoadingPanel() {
+
   return (
+
     <div className="dashboard-card loading-panel">
+
       <RefreshCw className="spin" size={22} />
+
       <span>Loading backend data…</span>
+
     </div>
+
   )
+
 }
+
+
 
 function ViewContent({ view, monitoring }) {
+
   if (view === 'health') {
+
     return <HealthView monitoring={monitoring} />
+
   }
+
+
 
   if (view === 'pipeline') {
+
     return <PipelineView />
+
   }
+
+
 
   if (view === 'model') {
+
     return <ModelView monitoring={monitoring} />
+
   }
+
+
 
   if (view === 'feedback') {
+
     return <FeedbackView stats={monitoring.stats} />
+
   }
 
+
+
   return <OverviewView monitoring={monitoring} />
+
 }
 
-// =========================================================
-// OVERVIEW
+
+
 // =========================================================
 
+// OVERVIEW
+
+// =========================================================
+
+
+
 function OverviewView({ monitoring }) {
+
   const stats = monitoring.stats || {}
+
   const model = monitoring.model || {}
+
   const ready = monitoring.ready || {}
+
   const metrics = monitoring.metrics?.parsed || {}
+
+
 
   const metricEntries = Object.entries(metrics).slice(0, 4)
 
+
+
   const cards = [
+
     ['Total feedback', stats.total_feedback, MessageCircle],
+
     ['Positive ratings', stats.positive_ratings, ThumbsUp],
+
     ['Negative ratings', stats.negative_ratings, ThumbsDown],
+
     ['Training eligible', stats.training_eligible, FileCheck2],
+
     [
+
       'Model version',
+
       model.model_version || ready.model_version,
+
       Cpu,
+
     ],
+
     [
+
       'Prompt version',
+
       monitoring.prompt?.prompt_version || ready.prompt_version,
+
       Zap,
+
     ],
+
   ]
 
+
+
   return (
+
     <>
+
       <div className="stats-grid">
+
         {cards.map(([label, value, Icon]) => (
+
           <MetricCard
+
             key={label}
+
             label={label}
+
             value={value}
+
             Icon={Icon}
+
           />
+
         ))}
+
       </div>
+
+
 
       <div className="dashboard-grid">
+
         <section className="dashboard-card">
+
           <CardHeader
+
             title="Backend metrics"
+
             subtitle="Prometheus values returned by /metrics"
+
             action={<BarChart3 size={17} />}
+
           />
+
+
 
           {metricEntries.length ? (
+
             <div className="metric-list">
+
               {metricEntries.map(([key, value]) => (
+
                 <div key={key}>
+
                   <span>{key}</span>
+
                   <strong>{value}</strong>
+
                 </div>
+
               ))}
+
             </div>
+
           ) : (
+
             <Unavailable text="No parseable Prometheus metrics were returned." />
+
           )}
+
         </section>
+
+
 
         <section className="dashboard-card">
+
           <CardHeader
+
             title="Inference visibility"
+
             subtitle="Aggregate history is not exposed by the API"
+
             action={<TrendingUp size={17} />}
+
           />
+
+
 
           <Unavailable text="Historical request volume, latency trends, and error rates are not available from backend endpoints." />
+
         </section>
+
       </div>
+
     </>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // METRIC CARD
+
 // =========================================================
+
+
 
 function MetricCard({ label, value, Icon }) {
+
   return (
+
     <div className="stat-card">
+
       <div className="stat-card-top">
+
         <span>{label}</span>
 
+
+
         <span className="stat-icon">
+
           <Icon size={16} />
+
         </span>
+
       </div>
+
+
 
       <strong
+
         className={
+
           value === undefined || value === null
+
             ? 'unavailable-value'
+
             : ''
+
         }
+
       >
+
         {formatValue(value)}
+
       </strong>
 
+
+
       <p>Live backend value</p>
+
     </div>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // MODEL MONITORING
+
 // =========================================================
+
+
 
 function ModelView({ monitoring }) {
+
   const model = monitoring.model || {}
+
   const prompt = monitoring.prompt || {}
 
+
+
   return (
+
     <div className="dashboard-grid">
+
       <section className="dashboard-card">
+
         <CardHeader
+
           title="Model metadata"
+
           subtitle="Returned by /metadata/model"
+
           action={<Cpu size={17} />}
+
         />
+
+
 
         <InfoRows data={model} />
+
       </section>
 
+
+
       <section className="dashboard-card">
+
         <CardHeader
+
           title="Prompt metadata"
+
           subtitle="Returned by /metadata/prompt"
+
           action={<Zap size={17} />}
+
         />
+
+
 
         <InfoRows data={prompt} />
+
       </section>
+
     </div>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // FEEDBACK ANALYTICS
+
 // =========================================================
+
+
 
 function FeedbackView({ stats }) {
+
   const data = stats || {}
+
   const total = Number(data.total_feedback) || 0
 
+
+
   const positive = Number(data.positive_ratings) || 0
+
   const negative = Number(data.negative_ratings) || 0
 
+
+
   return (
+
     <>
+
       <div className="stats-grid">
+
         {[
+
           ['Total submissions', data.total_feedback],
+
           ['Positive ratings', data.positive_ratings],
+
           ['Negative ratings', data.negative_ratings],
+
           ['Training eligible', data.training_eligible],
+
         ].map(([label, value]) => (
+
           <MetricCard
+
             key={label}
+
             label={label}
+
             value={value}
+
             Icon={ThumbsUp}
+
           />
+
         ))}
+
       </div>
+
+
 
       <section className="dashboard-card">
+
         <CardHeader
+
           title="Rating distribution"
+
           subtitle="Exact counts from /feedback/stats"
+
           action={<BarChart3 size={17} />}
+
         />
+
+
 
         <div className="distribution">
+
           <div>
+
             <span>Positive</span>
 
+
+
             <b>
+
               {total
+
                 ? `${((positive / total) * 100).toFixed(1)}%`
+
                 : '0%'}
+
             </b>
 
+
+
             <i>
+
               <em
+
                 style={{
+
                   width: total
+
                     ? `${(positive / total) * 100}%`
+
                     : '0%',
+
                 }}
+
               />
+
             </i>
+
           </div>
 
+
+
           <div>
+
             <span>Negative</span>
 
+
+
             <b>
+
               {total
+
                 ? `${((negative / total) * 100).toFixed(1)}%`
+
                 : '0%'}
+
             </b>
 
+
+
             <i>
+
               <em
+
                 className="negative-bar"
+
                 style={{
+
                   width: total
+
                     ? `${(negative / total) * 100}%`
+
                     : '0%',
+
                 }}
+
               />
+
             </i>
+
           </div>
+
         </div>
+
+
 
         <p className="card-footnote">
+
           Trend history and corrected-intent distributions are not
+
           available from the current backend response.
+
         </p>
+
       </section>
+
     </>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // PIPELINE STATUS
+
 // =========================================================
+
+
 
 function PipelineView() {
+
   return (
+
     <>
+
       <section className="dashboard-card pipeline-card">
+
         <CardHeader
+
           title="Continuous learning workflow"
+
           subtitle="Read-only architecture view · execution status is not instrumented"
+
           action={<span className="demo-inline">Read only</span>}
+
         />
 
+
+
         <div className="pipeline">
+
           {PIPELINE.map(([label, text, Icon], index) => (
+
             <div className="pipeline-stage" key={label}>
+
               <div className="pipeline-icon">
+
                 <Icon size={17} />
+
               </div>
 
+
+
               <strong>{label}</strong>
+
               <span>{text}</span>
 
+
+
               {index < PIPELINE.length - 1 && (
+
                 <ChevronRight
+
                   className="pipeline-arrow"
+
                   size={16}
+
                 />
+
               )}
+
             </div>
+
           ))}
+
         </div>
+
       </section>
 
+
+
       <div className="dashboard-card unavailable-card">
+
         <AlertTriangle size={18} />
 
+
+
         <div>
+
           <strong>Pipeline execution status unavailable</strong>
 
+
+
           <p>
+
             The backend exposes no safe run, deployment, approval, or
+
             drift-status endpoint, so this page does not present
+
             simulated job states or action buttons.
+
           </p>
+
         </div>
+
       </div>
+
     </>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // API AND SYSTEM HEALTH
+
 // =========================================================
+
+
 
 function HealthView({ monitoring }) {
+
   const checks = [
+
     ['Service health', monitoring.health, 'status'],
+
     ['Readiness', monitoring.ready, 'ready'],
+
     [
+
       'Model version at readiness',
+
       monitoring.ready,
+
       'model_version',
+
     ],
+
     [
+
       'Prompt version at readiness',
+
       monitoring.ready,
+
       'prompt_version',
+
     ],
+
   ]
 
+
+
   return (
+
     <div className="health-grid">
+
       {checks.map(([label, data, key]) => (
+
         <div className="dashboard-card health-card" key={label}>
+
           <div className="health-icon">
+
             <ShieldCheck size={18} />
+
           </div>
+
+
 
           <div>
+
             <span>{label}</span>
+
             <strong>{formatValue(data?.[key])}</strong>
+
           </div>
+
+
 
           <span
+
             className={
+
               data ? 'health-status good' : 'health-status bad'
+
             }
+
           >
+
             {data ? 'Live response' : 'Unavailable'}
+
           </span>
+
         </div>
+
       ))}
+
     </div>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // INFORMATION ROWS
+
 // =========================================================
+
+
 
 function InfoRows({ data }) {
+
   const entries = Object.entries(data).filter(
+
     ([key]) =>
+
       !key.includes('artifact_location') &&
+
       !key.includes('instruction_path')
+
   )
+
+
 
   return (
+
     <div className="info-rows">
+
       {entries.length ? (
+
         entries.map(([key, value]) => (
+
           <div key={key}>
+
             <span>{key.replaceAll('_', ' ')}</span>
+
             <strong>{formatValue(value)}</strong>
+
           </div>
+
         ))
+
       ) : (
+
         <Unavailable text="No metadata was returned." />
+
       )}
+
     </div>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // UNAVAILABLE STATE
+
 // =========================================================
+
+
 
 function Unavailable({ text }) {
+
   return (
+
     <div className="unavailable">
+
       <AlertTriangle size={16} />
+
       <span>{text}</span>
+
     </div>
+
   )
+
 }
 
+
+
 // =========================================================
+
 // CARD HEADER
+
 // =========================================================
+
+
 
 function CardHeader({ title, subtitle, action }) {
+
   return (
+
     <div className="card-header">
+
       <div>
+
         <h3>{title}</h3>
+
         <p>{subtitle}</p>
+
       </div>
 
+
+
       <span>{action}</span>
+
     </div>
+
   )
+
 }
+
+
 
 export default App
